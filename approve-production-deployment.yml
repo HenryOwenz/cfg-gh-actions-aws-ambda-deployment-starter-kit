@@ -1,0 +1,40 @@
+name: Approve Production Deployment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  statuses: write  # Add this line to grant permission to create commit statuses
+  contents: read  # Add this to allow repository checkout
+  actions: write  # Add this to allow triggering other workflows
+
+jobs:
+  approve-production:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Approve production deployment
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh api repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA} \
+          -f state='success' \
+          -f context='Production Deployment Approval' \
+          -f description='Production deployment approved'
+
+    - name: Trigger production deployment
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          github.rest.actions.createWorkflowDispatch({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: 'deploy-production.yml',
+            ref: 'main',
+            inputs: {
+              approved_sha: '${{ github.sha }}'
+            }
+          })

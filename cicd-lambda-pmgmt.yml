@@ -1,0 +1,132 @@
+name: PMGMT CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  issues: write
+  contents: read
+  statuses: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      LAMBDA_ZIP_FILE_NAME: lambda-pmgmt-backend.zip
+      APPLICATION_BUILD_DIRECTORY: public_user
+    outputs:
+      zip_file_name: ${{ steps.set_output.outputs.zip_file_name }}
+    strategy:
+      matrix:
+        node-version: [22.x]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Validate environment variables
+      run: |
+        if [ -z "$LAMBDA_ZIP_FILE_NAME" ]; then
+          echo "Environment variable LAMBDA_ZIP_FILE_NAME not set"
+          exit 1
+        fi
+        if [ -z "$APPLICATION_BUILD_DIRECTORY" ]; then
+          echo "Environment variable APPLICATION_BUILD_DIRECTORY not set"
+          exit 1
+        fi
+        echo "Application build directory is $APPLICATION_BUILD_DIRECTORY"
+        echo "Lambda zip file name is $LAMBDA_ZIP_FILE_NAME"
+
+    - name: Install npm dependencies
+      run: |
+        cd $APPLICATION_BUILD_DIRECTORY || { echo "Failed to enter $APPLICATION_BUILD_DIRECTORY directory"; exit 1; }
+        npm install || { echo "Failed to install npm packages"; exit 1; }
+
+    - name: Create ZIP file
+      run: |
+        cd $APPLICATION_BUILD_DIRECTORY || exit 1
+        zip -r ../$LAMBDA_ZIP_FILE_NAME . || { echo "Failed to create ZIP file"; exit 1; }
+        echo "Created ZIP file: $LAMBDA_ZIP_FILE_NAME"
+
+    - name: List files in build directory
+      run: ls
+
+    - name: Check ZIP file size
+      run: |
+        ZIP_FILE_PATH="$LAMBDA_ZIP_FILE_NAME"
+        FILE_SIZE_MB=$(du -m "$ZIP_FILE_PATH" | cut -f1)
+        echo "ZIP file size is ${FILE_SIZE_MB}MB"
+        
+        if [ "$FILE_SIZE_MB" -ge 50 ]; then
+          echo "ZIP file size exceeds 50MB. It's ${FILE_SIZE_MB}MB."
+          exit 1
+        fi
+
+    - name: Set output
+      id: set_output
+      run: echo "zip_file_name=$LAMBDA_ZIP_FILE_NAME" >> $GITHUB_OUTPUT
+
+    - name: Upload Lambda package
+      uses: actions/upload-artifact@v4
+      with:
+        name: lambda-package
+        path: ${{ env.LAMBDA_ZIP_FILE_NAME }}
+        retention-days: 5
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Download Lambda package
+      uses: actions/download-artifact@v4
+      with:
+        name: lambda-package
+
+    - name: Echo ZIP file name
+      run: echo "The ZIP file name is ${{ needs.build.outputs.zip_file_name }}"
+        
+    - name: Verify ZIP file
+      run: |
+        if [ -f "${{ needs.build.outputs.zip_file_name }}" ]; then
+          echo "ZIP file found: ${{ needs.build.outputs.zip_file_name }}"
+        else
+          echo "ZIP file not found!"
+          exit 1
+        fi
+
+    - name: Test ZIP contents
+      run: |
+        mkdir extracted
+        unzip ${{ needs.build.outputs.zip_file_name }} -d extracted
+        cd extracted
+        echo "Contents of extracted ZIP file:"
+        ls -R
+        echo "Package.json contents:"
+        cat package.json
+
+    - name: Set pending status for production deployment
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh api repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA} \
+          -f state='pending' \
+          -f context='Production Deployment Approval' \
+          -f description='Waiting for approval to deploy to production'
+
+    # Add your staging deployment steps here
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging..."
+        echo "Using ZIP file: ${{ needs.build.outputs.zip_file_name }}"
+        # Add your actual deployment commands here
+
+    - name: Echo deployment completion
+      run: echo "Staging deployment completed"
+

@@ -1,0 +1,69 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: 'The SHA of the commit that was approved'
+        required: true
+
+permissions:
+  contents: read
+  statuses: read
+  actions: read  # Add this to allow reading workflow runs
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check deployment approval status
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        status=$(gh api repos/${GITHUB_REPOSITORY}/commits/${{ github.event.inputs.approved_sha }}/status \
+          --jq '.statuses[] | select(.context == "Production Deployment Approval") | .state')
+        if [ "$status" != "success" ]; then
+          echo "Production deployment not approved yet"
+          exit 1
+        fi
+
+    - name: Download Lambda package
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        github_token: ${{secrets.GITHUB_TOKEN}}
+        workflow: cicd-lambda-pmgmt.yml
+        name: lambda-package
+        commit: ${{ github.event.inputs.approved_sha }}
+        check_artifacts: true
+        if_no_artifact_found: fail
+
+    - name: Verify Lambda package
+      run: |
+        if [ -f "lambda-pmgmt-backend.zip" ]; then
+          echo "Lambda package found"
+        else
+          echo "Lambda package not found!"
+          exit 1
+        fi
+
+    - name: Test ZIP contents
+      run: |
+        mkdir extracted
+        unzip lambda-pmgmt-backend.zip -d extracted
+        cd extracted
+        echo "Contents of extracted ZIP file:"
+        ls
+        echo "Package.json contents:"
+        cat package.json
+
+    # Add your production deployment steps here
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production..."
+        echo "Using ZIP file: lambda-pmgmt-backend.zip"
+        # Add your actual deployment commands here
+
+    - name: Echo deployment completion
+      run: echo "Production deployment completed"
